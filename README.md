@@ -8,7 +8,7 @@ Built for AME 434 · Machine Learning for Media & Arts · Arizona State Universi
 
 ## Try it
 
-- **Live:** `https://<your-github-username>.github.io/visionbrush/`
+- **Live:** <https://thekanatomy.github.io/visionbrush/>
 - **Local:** `python3 -m http.server 8000` in this folder, then open <http://localhost:8000>
   (the camera only works on `https://` or `localhost`)
 - **No camera?** Add `?mouse` (the mouse stands in for your eyes) or `?simulate` (fake eye tracker that follows the calibration dots, then the mouse)
