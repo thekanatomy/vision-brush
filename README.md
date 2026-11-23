@@ -2,7 +2,7 @@
 
 **Draw with your eyes. Guide it with your voice.**
 
-VisionBrush is a full-screen drawing canvas for people with limited hand movement (ALS, spinal cord injury, cerebral palsy, MS, and others). A normal webcam tracks where you look; you speak short commands like “draw”, “here”, “blue” or “undo”. Nothing to click, no toolbars. The whole screen is the canvas, with your face live behind it.
+VisionBrush is a full-screen drawing canvas for people with limited hand movement (ALS, spinal cord injury, cerebral palsy, MS, and others). A normal webcam tracks where you look; you speak short commands like “start”, “end”, “fix”, “blue” or “undo”. Nothing to click, no toolbars. The whole screen is the canvas, with your face live behind it.
 
 Built for AME 434 · Machine Learning for Media & Arts · Arizona State University.
 
@@ -19,13 +19,14 @@ Best in **Chrome or Edge** on a laptop or desktop, webcam at eye level, light on
 
 1. Click once (or press Space) to start. Allow the camera and microphone.
 2. **Calibrate:** look at each dot until it moves on (~35 s). VisionBrush reports its accuracy.
-3. **Draw:** say a command. Your gaze decides *where*, your voice decides *what*.
+3. **Draw:** say a command. Your gaze decides *where*, your voice decides *what*. Once calibrated, your face fades back so the drawing takes focus; a faint mesh and glowing iris rings show what's being tracked.
 
 | Say | What happens |
 |---|---|
-| **draw** / **stop** | Freehand pen follows your eyes / lifts |
+| **start** / **end** | Freehand pen follows your eyes / lifts (also: draw / stop) |
+| **fix** | Toggle shape snapping: on “end”, rough circles, ovals, rectangles, triangles and lines snap clean (like Apple Pencil). Say it right after a stroke to fix that one too. “undo” brings back the hand-drawn version. |
 | **here** | Place a point where you’re looking (lines, circles, dots) |
-| **done** · **close** | Finish the shape · connect back to the first point |
+| **done** · **close** | Finish a line/circle shape · connect back to the first point |
 | **free** · **line** · **circle** | Switch tool |
 | **red, orange, yellow, green, blue, purple, pink, brown, gray, black, white** | Colour |
 | **eraser** | Erase where you draw |
@@ -43,7 +44,7 @@ Best in **Chrome or Edge** on a laptop or desktop, webcam at eye level, light on
 
 ### Keyboard (for caregivers and switch users)
 
-`Space` draw/stop or place · `Enter` place · `Esc` stop · `Z` undo · `Shift+Z` redo · `Delete` clear · `1 2 3` free/line/circle · `[ ]` size · `K` next colour · `- =` smoothing · `C` calibrate · `R` recenter · `H` help · `B` face · `D` hands-free · `S` save · `P` photo · `F` fullscreen
+`Space` start/end or place · `X` fix on/off · `Enter` place · `Esc` stop · `Z` undo · `Shift+Z` redo · `Delete` clear · `1 2 3` free/line/circle · `[ ]` size · `K` next colour · `- =` smoothing · `C` calibrate · `R` recenter · `H` help · `B` face · `D` hands-free · `S` save · `P` photo · `F` fullscreen
 
 ## How it works
 
@@ -94,6 +95,7 @@ js/calibration.js   ridge regression + cross-validation
 js/filters.js       One Euro filter, lazy brush
 js/voice.js         speech recognition + command vocabulary
 js/canvas.js        vector strokes, undo/redo, export
+js/shapes.js        "fix" shape recognizer (line, circle, oval, triangle, rectangle)
 js/sim.js           ?simulate fake tracker for demos/tests
 ```
 

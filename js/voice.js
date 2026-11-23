@@ -6,14 +6,16 @@ export const voiceSupported = !!SR;
 // Each entry: spoken phrases → command. Kept deliberately small so
 // people talking nearby rarely trigger anything by accident.
 const VOCAB = [
-  [['draw', 'drawing', 'start', 'begin', 'pen down'], { type: 'pen', on: true }],
-  [['stop', 'pause', 'lift', 'pen up'], { type: 'pen', on: false }],
+  // "start" / "end" are the main pen words: short, distinct, and recognized reliably.
+  [['start', 'starts', 'started', 'begin', 'draw', 'drawing', 'pen down'], { type: 'pen', on: true }],
+  [['end', 'ends', 'ending', 'stop', 'pause', 'lift', 'pen up'], { type: 'pen', on: false }],
   [['here', 'hear', 'point', 'next', 'mark'], { type: 'place' }],
-  [['done', 'finish', 'finished', 'end'], { type: 'finish' }],
+  [['done', 'finish', 'finished'], { type: 'finish' }],
+  [['fix', 'fixed', 'fix it', 'fix shapes', 'snap', 'shapes'], { type: 'fix' }],
   [['close', 'close shape', 'connect'], { type: 'close' }],
   [['undo', 'oops'], { type: 'undo' }],
   [['redo'], { type: 'redo' }],
-  [['clear', 'erase all', 'new page', 'start over', 'clear all'], { type: 'clear' }],
+  [['clear', 'erase all', 'new page', 'clear all'], { type: 'clear' }],
   [['yes', 'confirm', 'yeah', 'sure'], { type: 'yes' }],
   [['no', 'cancel', 'nope', 'keep it'], { type: 'no' }],
   [['save', 'download', 'export'], { type: 'save' }],
@@ -36,7 +38,7 @@ const VOCAB = [
   [['bigger', 'thicker', 'larger', 'big', 'thick'], { type: 'size', delta: 1 }],
   [['smaller', 'thinner', 'small', 'thin'], { type: 'size', delta: -1 }],
   [['calibrate', 'recalibrate', 'calibration'], { type: 'calibrate' }],
-  [['recenter', 're center', 'center', 'centre', 'fix'], { type: 'recenter' }],
+  [['recenter', 're center', 'center', 'centre'], { type: 'recenter' }],
   [['steadier', 'smoother', 'steady', 'smooth', 'slower'], { type: 'steady', delta: 1 }],
   [['faster', 'quicker', 'looser', 'sharper'], { type: 'steady', delta: -1 }],
   [['help', 'commands', 'what can i say'], { type: 'help' }],
@@ -69,6 +71,19 @@ for (const k of MAP.keys()) {
   }
 }
 
+// Common mishearings, accepted only when they are the *whole* utterance
+// (so "and" inside a sentence never ends a stroke).
+const ALIASES = {
+  and: 'end', an: 'end', en: 'end', in: 'end', ant: 'end', 'the end': 'end',
+  stat: 'start', stuart: 'start', stack: 'start', 'star': 'start', 'stars': 'start',
+  six: 'fix', fics: 'fix', fixe: 'fix', 'fix ': 'fix', fish: 'fix', 'fit': 'fix',
+};
+
+export function aliasFor(text) {
+  const t = text.toLowerCase().replace(/[^a-z\s]/g, ' ').replace(/\s+/g, ' ').trim();
+  return ALIASES[t] || null;
+}
+
 export function parse(text) {
   const words = text
     .toLowerCase()
@@ -96,10 +111,10 @@ export function parse(text) {
 
 export const HELP_GROUPS = [
   ['Draw', [
-    ['draw', 'Pen follows your eyes'],
-    ['stop', 'Lift the pen'],
+    ['start', 'Pen follows your eyes'],
+    ['end', 'Lift the pen'],
     ['here', 'Place a point where you look'],
-    ['done', 'Finish the shape'],
+    ['fix', 'Snap rough shapes clean (on/off)'],
   ]],
   ['Tools', [
     ['free · line · circle', 'Switch tool'],
@@ -197,6 +212,10 @@ export class Voice {
       const res = e.results[i];
       const text = res[0].transcript.trim();
       let cmds = parse(text);
+      if (!cmds.length && res.isFinal) {
+        const alias = aliasFor(text);
+        if (alias) cmds = parse(alias);
+      }
       const last = cmds[cmds.length - 1];
       if (!res.isFinal && last?.atEnd && AMBIGUOUS.has(last.word)) cmds = cmds.slice(0, -1);
       const done = this.done.get(i) || 0;

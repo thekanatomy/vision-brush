@@ -183,6 +183,7 @@ export class FaceTracker {
       },
       blink: Math.min(g('eyeBlinkLeft'), g('eyeBlinkRight')),
       quality,
+      lm: L, // for the on-face tracking effect
     };
   }
 }

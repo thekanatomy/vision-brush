@@ -31,6 +31,14 @@ export class OneEuro2D {
     this.tPrev = 0;
   }
 
+  /** Jump the filter to a known-good point (e.g. rewinding past a blink). */
+  set(p, t) {
+    this.prev = { x: p.x, y: p.y };
+    this.vx = 0;
+    this.vy = 0;
+    if (t !== undefined) this.tPrev = t;
+  }
+
   /** @param p {x,y} in px, @param t seconds */
   filter(p, t) {
     if (!this.prev) {

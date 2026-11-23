@@ -15,6 +15,7 @@
 <body>
   <video id="camera" autoplay playsinline muted></video>
   <div id="veil"></div>
+  <canvas id="face-fx" aria-hidden="true"></canvas>
   <canvas id="art" aria-label="Your drawing"></canvas>
   <canvas id="overlay" aria-hidden="true"></canvas>
 
@@ -59,7 +60,7 @@
       <p class="lede">Draw with your eyes. Guide it with your voice.</p>
       <ol class="steps">
         <li><b>Look</b><span>Follow a few dots so it learns your eyes.</span></li>
-        <li><b>Speak</b><span>Say “draw”, “here”, “blue” or “undo”.</span></li>
+        <li><b>Speak</b><span>Say “start” and “end” to draw. “fix” snaps shapes clean.</span></li>
         <li><b>Create</b><span>Where you look is where the brush goes.</span></li>
       </ol>
       <div class="begin"><span class="pill primary">Click anywhere to begin</span><span class="kbd">or press Space</span></div>
@@ -70,6 +71,25 @@
       Works best on a laptop or desktop with the webcam at eye level and light on your face.</p>
       <button id="try-mouse" type="button">Preview with a mouse instead</button>
     </footer>
+  </section>
+
+  <section id="phone" aria-labelledby="phone-title">
+    <div class="phone-inner">
+      <svg class="laptop" viewBox="0 0 96 64" aria-hidden="true">
+        <rect x="16" y="6" width="64" height="42" rx="5" fill="none" stroke="currentColor" stroke-width="3.5"/>
+        <path d="M4 52h88v2a4 4 0 0 1-4 4H8a4 4 0 0 1-4-4v-2Z" fill="currentColor"/>
+        <path d="M34 27c3.5-5 8-7.5 14-7.5S58.5 22 62 27c-3.5 5-8 7.5-14 7.5S37.5 32 34 27Z" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linejoin="round"/>
+        <circle cx="48" cy="27" r="4" fill="#007aff"/>
+      </svg>
+      <h1 id="phone-title">Open VisionBrush on a computer</h1>
+      <p class="phone-lede">It tracks your eyes with a webcam and turns your whole screen into the canvas, so it needs a laptop or desktop with Chrome or Edge.</p>
+      <div class="phone-link" id="phone-url"></div>
+      <div class="phone-actions">
+        <button class="pill primary" id="phone-share" type="button">Send to my computer</button>
+        <button class="pill" id="phone-copy" type="button">Copy link</button>
+      </div>
+      <button id="phone-anyway" type="button">Continue on this phone anyway</button>
+    </div>
   </section>
 
   <noscript><p class="noscript">VisionBrush needs JavaScript turned on.</p></noscript>

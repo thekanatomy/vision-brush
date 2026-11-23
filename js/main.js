@@ -3,6 +3,7 @@ import { OneEuro2D, LazyBrush } from './filters.js';
 import { GazeModel, CAL_POINTS, VAL_POINTS, cleanSamples, median } from './calibration.js';
 import { Voice, voiceSupported, HELP_GROUPS } from './voice.js';
 import { Drawing, COLORS, SIZES } from './canvas.js';
+import { recognize } from './shapes.js';
 
 const $ = (s) => document.querySelector(s);
 const ui = {
@@ -10,6 +11,7 @@ const ui = {
   video: $('#camera'),
   art: $('#art'),
   overlay: $('#overlay'),
+  faceFx: $('#face-fx'),
   cursor: $('#cursor'),
   ring: $('#cursor .ring circle'),
   calDot: $('#cal-dot'),
@@ -32,6 +34,7 @@ const ui = {
 const params = new URLSearchParams(location.search);
 const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
 const octx = ui.overlay.getContext('2d');
+const fctx = ui.faceFx.getContext('2d');
 const drawing = new Drawing(ui.art);
 
 const MODE_LABEL = { free: 'Freehand', line: 'Lines', circle: 'Circles' };
@@ -39,7 +42,12 @@ const RING_LEN = 2 * Math.PI * 19;
 const SNAP_PX = 38;
 const DWELL_R = 50;
 const DWELL_MS = 1100;
-const BLINK = 0.62;
+// Involuntary-eye guards
+const BLINK_ON = 0.45; // eyelids closing (hysteresis: on above this…)
+const BLINK_OFF = 0.3; // …off below this
+const BLINK_REWIND_MS = 140; // the eyelid starts dragging the iris down before a blink registers
+const BLINK_SETTLE_MS = 170; // eyes wobble for a moment after they reopen
+const REGRAB_MS = 250; // look back at the pen this long to pick it up again
 
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
@@ -68,13 +76,19 @@ const S = {
   showFace: saved.showFace ?? true,
   showCursor: saved.showCursor ?? true,
   sound: saved.sound ?? true,
+  fix: saved.fix ?? false, // snap finished strokes into clean shapes
+  morph: null,
   model: null,
   bias: { x: 0, y: 0 },
   accuracy: null,
   noise: 80, // px of frame-to-frame jitter; measured during calibration
   gaze: null,
   history: [],
-  face: { present: false, lastSeen: 0, blinkStart: 0 },
+  face: { present: false, lastSeen: 0 },
+  blink: { on: false, start: 0, end: -1e9, yaw: 0, pitch: 0, clean: true },
+  rawHist: [],
+  waiting: false, // pen is parked after a glance / blink-out / look-away
+  regrabSince: 0,
   lastFrame: null,
   anchor: null,
   chainStart: null,
@@ -106,6 +120,7 @@ function persist() {
         showFace: S.showFace,
         showCursor: S.showCursor,
         sound: S.sound,
+        fix: S.fix,
       }),
     );
   } catch {
@@ -213,12 +228,12 @@ function renderIsland() {
   else if (camera && !S.face.present) {
     state = 'Can’t see your face';
     alert = true;
-  } else if (S.mode === 'free') state = S.pen ? 'Drawing' : 'Paused · say “draw”';
+  } else if (S.mode === 'free') state = S.waiting ? 'Look back at the pen · or say “end”' : S.pen ? 'Drawing · say “end” to lift' : 'Say “start” to draw';
   else if (S.anchor) state = S.mode === 'circle' ? 'Look at the edge · “here”' : 'Next point · “here” or “done”';
   else state = 'Look, then say “here”';
 
-  const mode = MODE_LABEL[S.mode] + (S.dwell ? ' · Hands-free' : '');
-  const sig = [state, mode, S.color, S.sizeIdx, S.micState, S.pen, alert, S.phase].join('|');
+  const mode = MODE_LABEL[S.mode] + (S.fix ? ' · Fix' : '') + (S.dwell ? ' · Hands-free' : '');
+  const sig = [state, mode, S.color, S.sizeIdx, S.micState, S.pen, alert, S.phase, S.waiting].join('|');
   if (sig === islandSig) return;
   islandSig = sig;
   ui.state.textContent = state;
@@ -252,12 +267,53 @@ function onFaceFrame(fr) {
   if (!fr.face) return;
   S.face.present = true;
   S.face.lastSeen = fr.t;
-  const blinking = fr.blink > BLINK;
-  longBlink(blinking, fr.t);
-  if (S.collector && !blinking) S.collector.push(fr.f);
-  if (blinking || !S.model || S.phase === 'calibrating' || S.input === 'mouse') return;
+  const eyes = blinkState(fr);
+  if (S.collector && eyes === 'open') S.collector.push(fr.f);
+  if (eyes !== 'open' || !S.model || S.phase === 'calibrating' || S.input === 'mouse') return;
+  if (!S.model.plausible(fr.f)) return; // rubbing an eye, squinting, tracking glitch
   const p = S.model.predict(fr.f);
   onGazeSample({ x: p.x + S.bias.x, y: p.y + S.bias.y }, fr.t);
+}
+
+/** 'open' | 'closed' | 'settling' — with hysteresis so half-blinks don't flicker. */
+function blinkState(fr) {
+  const b = S.blink;
+  if (!b.on && fr.blink > BLINK_ON) {
+    b.on = true;
+    b.start = fr.t;
+    b.yaw = fr.f.yaw;
+    b.pitch = fr.f.pitch;
+    b.clean = true;
+    rewind(fr.t - BLINK_REWIND_MS);
+  } else if (b.on) {
+    if (Math.abs(fr.f.yaw - b.yaw) > 0.06 || Math.abs(fr.f.pitch - b.pitch) > 0.06) b.clean = false; // head moved: rubbing, not a deliberate blink
+    if (fr.blink < BLINK_OFF) {
+      b.on = false;
+      b.end = fr.t;
+      longBlink(fr.t - b.start, b.clean);
+    }
+  }
+  if (b.on) return 'closed';
+  return fr.t - b.end < BLINK_SETTLE_MS ? 'settling' : 'open';
+}
+
+/** Undo everything the gaze did after time t (the eyelid was already pulling the iris). */
+function rewind(t) {
+  S.history = S.history.filter((h) => h.t <= t);
+  S.rawHist = S.rawHist.filter((h) => h.t <= t);
+  const last = S.history[S.history.length - 1];
+  if (last) {
+    euro.set(last, last.t / 1000);
+    S.gaze = { x: last.x, y: last.y };
+  }
+  const a = drawing.active;
+  if (a && a.points.length > 1) {
+    const kept = a.points.filter((p) => p.t <= t);
+    a.points = kept.length ? kept : [a.points[0]];
+    const tip = a.points[a.points.length - 1];
+    brush.reset(tip);
+  }
+  S.dwellState.c = null;
 }
 
 function onGazeSample(raw, t) {
@@ -270,16 +326,50 @@ function onGazeSample(raw, t) {
   S.gaze = g;
   S.history.push({ t, x: g.x, y: g.y });
   while (S.history.length && S.history[0].t < t - 2500) S.history.shift();
+  S.rawHist.push({ t, x: r.x, y: r.y });
+  while (S.rawHist.length && S.rawHist[0].t < t - 1000) S.rawHist.shift();
   if (S.phase !== 'ready' || S.card === 'help' || S.card === 'confirm') return;
   if (S.mode === 'free' && S.pen) freeDraw(g, t);
   if (S.dwell && S.mode !== 'free') dwellStep(g, t);
 }
 
-/** Where the person was looking just before a command was spoken. */
+/** Where the person was looking just before a command was spoken (robust to a glance inside the window). */
 function gazeBefore(t, from = 900, to = 150) {
   const pts = S.history.filter((h) => h.t >= t - from && h.t <= t - to);
   if (pts.length < 3) return S.gaze ? { ...S.gaze } : null;
-  return { x: median(pts.map((p) => p.x)), y: median(pts.map((p) => p.y)) };
+  const m = { x: median(pts.map((p) => p.x)), y: median(pts.map((p) => p.y)) };
+  const near = pts.filter((p) => dist(p, m) < Math.max(80, S.noise * 2));
+  if (near.length < 3) return m;
+  return { x: median(near.map((p) => p.x)), y: median(near.map((p) => p.y)) };
+}
+
+// A glance is a jump well beyond normal drawing steps + this person's jitter.
+const glanceDist = () => clamp(S.noise * 3 + 150, 300, 520);
+// Looking "at the pen" lands within this person's accuracy of it.
+const regrabDist = () => clamp(Math.max(S.noise, S.accuracy ?? 100) * 1.1, 80, 200);
+
+/** A glance: the last few raw gaze samples all landed far from the pen. Returns the glance start time. */
+function glanceStart(t) {
+  if (S.input === 'mouse' || !brush.pos) return 0;
+  const recent = S.rawHist.filter((h) => h.t > t - 160);
+  if (recent.length < 3) return 0;
+  const far = recent.slice(-3);
+  // Compare against where the pen was when the jump began (it may have started chasing since).
+  const pts = drawing.active?.points || [];
+  let origin = pts[0] || brush.pos;
+  for (const p of pts) {
+    if (p.t >= far[0].t) break;
+    origin = p;
+  }
+  if (!far.every((h) => dist(h, origin) > glanceDist())) return 0;
+  return far[0].t;
+}
+
+function parkPen(since) {
+  S.waiting = true;
+  S.regrabSince = 0;
+  if (since) rewind(since - 34);
+  blip(520, 50, 0.03);
 }
 
 function snap(p) {
@@ -299,6 +389,23 @@ function snap(p) {
 
 // ---------- Drawing ----------
 function freeDraw(g, t) {
+  if (S.waiting) {
+    // The pen waits where it was. Look back at it to keep drawing the same line.
+    if (brush.pos && dist(g, brush.pos) < regrabDist()) {
+      S.regrabSince ||= t;
+      if (t - S.regrabSince >= REGRAB_MS) {
+        S.waiting = false;
+        S.regrabSince = 0;
+        blip(988, 50, 0.03);
+      }
+    } else S.regrabSince = 0;
+    return;
+  }
+  const since = drawing.active ? glanceStart(t) : 0;
+  if (since) {
+    parkPen(since);
+    return;
+  }
   brush.update(g);
   const a = drawing.active;
   if (!a) {
@@ -331,16 +438,19 @@ function commitActive(trimMs = 0) {
 
 function penOn() {
   if (S.mode !== 'free') setMode('free', true);
+  if (drawing.active) commitActive(); // "draw" again = start a fresh line where you're looking now
   S.pen = true;
+  S.waiting = false;
   brush.reset(S.gaze);
-  drawing.active = null;
   blip(988);
 }
 
 function penOff(trimMs = 0) {
   if (!S.pen) return;
   S.pen = false;
+  S.waiting = false;
   commitActive(trimMs);
+  if (S.fix) fixLast();
   brush.reset(null);
   blip(660);
 }
@@ -348,6 +458,28 @@ function penOff(trimMs = 0) {
 function finishShape() {
   S.anchor = null;
   S.chainStart = null;
+}
+
+/** "fix": snap the last freehand stroke into the shape it was meant to be. */
+function fixLast({ quiet = false } = {}) {
+  const last = drawing.lastVisible();
+  if (!last || last.type !== 'free' || last.color === 'eraser') return false;
+  const r = recognize(last.points);
+  if (!r) {
+    if (!quiet) toast('Kept as drawn');
+    return false;
+  }
+  drawing.replaceLast({ ...r.shape, color: last.color, width: last.width, original: last });
+  S.morph = { stroke: last, t0: performance.now() };
+  const c = r.shape.c || (r.shape.points ? centroid(r.shape.points) : { x: (r.shape.a.x + r.shape.b.x) / 2, y: (r.shape.a.y + r.shape.b.y) / 2 });
+  S.pulses.push({ x: c.x, y: c.y, t: performance.now() });
+  toast(r.label);
+  blip(1320, 80);
+  return true;
+}
+
+function centroid(pts) {
+  return { x: pts.reduce((a, p) => a + p.x, 0) / pts.length, y: pts.reduce((a, p) => a + p.y, 0) / pts.length };
 }
 
 function place(p) {
@@ -399,15 +531,13 @@ function dwellStep(g, t) {
   }
 }
 
-function longBlink(blinking, now) {
-  if (blinking) {
-    if (!S.face.blinkStart) S.face.blinkStart = now;
-    return;
-  }
-  if (!S.face.blinkStart) return;
-  const dur = now - S.face.blinkStart;
-  S.face.blinkStart = 0;
-  if (!S.dwell || S.phase !== 'ready' || dur < 600 || dur > 2500) return;
+/**
+ * Hands-free mode: a deliberate eyes-closed for ~0.7–2.5 s toggles the pen.
+ * Normal blinks are far shorter; rubbing an itchy eye moves the head or hides
+ * the face, so `clean` is false and nothing happens.
+ */
+function longBlink(dur, clean) {
+  if (!S.dwell || S.phase !== 'ready' || !clean || dur < 700 || dur > 2500) return;
   if (S.mode === 'free') (S.pen ? penOff : penOn)();
   else finishShape();
 }
@@ -419,7 +549,7 @@ function setMode(mode, quiet = false) {
   S.dwellState.c = null;
   if (!quiet) {
     const hint = {
-      free: 'Freehand — say “draw”',
+      free: 'Freehand — say “start”, then “end”',
       line: 'Lines — look, then say “here”',
       circle: 'Circles — “here” at the centre, then the edge',
     }[mode];
@@ -431,6 +561,7 @@ function undo() {
   if (drawing.active) {
     drawing.active = null;
     S.pen = false;
+    S.waiting = false;
     brush.reset(null);
     toast('Undo');
     return;
@@ -442,6 +573,12 @@ function undo() {
       S.anchor = last.a;
     } else finishShape();
     toast('Undo');
+    return;
+  }
+  const last = drawing.lastVisible();
+  if (last?.original) {
+    drawing.replaceLast(last.original); // like Apple Pencil: undo a snap → your hand-drawn line
+    toast('Back to hand-drawn');
     return;
   }
   toast(drawing.undo() ? 'Undo' : 'Nothing to undo');
@@ -592,18 +729,12 @@ function run(cmd, meta = {}) {
       break;
     case 'color':
       S.color = cmd.color;
-      if (drawing.active) {
-        commitActive();
-        brush.reset(S.gaze);
-      }
+      if (drawing.active) commitActive(); // next stroke continues from the pen tip in the new style
       toast(cmd.color === 'eraser' ? 'Eraser' : cmd.color[0].toUpperCase() + cmd.color.slice(1), { swatch: cmd.color });
       break;
     case 'size':
       S.sizeIdx = clamp(S.sizeIdx + cmd.delta, 0, SIZES.length - 1);
-      if (drawing.active) {
-        commitActive();
-        brush.reset(S.gaze);
-      }
+      if (drawing.active) commitActive(); // next stroke continues from the pen tip in the new style
       toast(`Size ${S.sizeIdx + 1} of ${SIZES.length}`);
       break;
     case 'calibrate':
@@ -646,6 +777,12 @@ function run(cmd, meta = {}) {
       applyFace();
       calibrate();
       break;
+    case 'fix': {
+      S.fix = cmd.on ?? !S.fix;
+      const fixedNow = S.fix && !S.pen && fixLast({ quiet: true });
+      if (!fixedNow) toast(S.fix ? 'Shape fix on — say “end” and rough shapes snap clean' : 'Shape fix off', { ms: 2400 });
+      break;
+    }
     case 'sound':
       S.sound = cmd.on;
       toast(cmd.on ? 'Sound on' : 'Sound off');
@@ -837,7 +974,7 @@ async function calibrate() {
   const tip = acc > 190 ? ' Try more light, sit a little closer, and say “calibrate”.' : '';
   showCard({
     title: `${label} calibration`,
-    body: `Accurate to about ${acc} px. Say “draw” to start, or “help” for every command.${tip}`,
+    body: `Accurate to about ${acc} px. Say “start” to draw and “end” to lift the pen. “help” shows everything.${tip}`,
     autoHide: 6000,
   });
   renderIsland();
@@ -879,7 +1016,27 @@ function drawOverlay(now) {
   if (S.phase === 'ready' && g && (S.input === 'mouse' || S.face.present)) {
     const color = S.color === 'eraser' ? '#ffffff' : COLORS[S.color];
     const width = SIZES[S.sizeIdx];
-    if (S.mode === 'free' && S.pen && brush.pos) {
+    if (S.mode === 'free' && S.pen && brush.pos && S.waiting) {
+      // Parked pen: a breathing ring that fills as you look back at it.
+      const k = 0.5 + 0.5 * Math.sin(now / 260);
+      const grab = S.regrabSince ? clamp((now - S.regrabSince) / REGRAB_MS, 0, 1) : 0;
+      octx.strokeStyle = `rgba(0,122,255,${0.35 + 0.35 * k})`;
+      octx.lineWidth = 3;
+      octx.beginPath();
+      octx.arc(brush.pos.x, brush.pos.y, regrabDist() * (0.85 + 0.15 * k), 0, Math.PI * 2);
+      octx.stroke();
+      if (grab) {
+        octx.strokeStyle = '#007aff';
+        octx.lineWidth = 4;
+        octx.beginPath();
+        octx.arc(brush.pos.x, brush.pos.y, regrabDist(), -Math.PI / 2, -Math.PI / 2 + grab * Math.PI * 2);
+        octx.stroke();
+      }
+      octx.fillStyle = color;
+      octx.beginPath();
+      octx.arc(brush.pos.x, brush.pos.y, Math.max(4, width / 2), 0, Math.PI * 2);
+      octx.fill();
+    } else if (S.mode === 'free' && S.pen && brush.pos) {
       octx.strokeStyle = 'rgba(0,0,0,0.25)';
       octx.lineWidth = 1;
       octx.beginPath();
@@ -935,6 +1092,88 @@ function drawOverlay(now) {
     octx.arc(p.x, p.y, 10 + k * 34, 0, Math.PI * 2);
     octx.stroke();
   }
+
+  // "fix" snap: the hand-drawn stroke fades out over the clean shape.
+  if (S.morph) {
+    const k = (now - S.morph.t0) / 420;
+    if (k >= 1) S.morph = null;
+    else {
+      octx.save();
+      octx.globalAlpha = 0.7 * (1 - k) ** 2;
+      Drawing.paint(octx, S.morph.stroke, true);
+      octx.restore();
+    }
+  }
+}
+
+// ---------- Face-tracking effect (subtle) ----------
+const EYE_R = [33, 7, 163, 144, 145, 153, 154, 155, 133, 173, 157, 158, 159, 160, 161, 246];
+const EYE_L = [263, 249, 390, 373, 374, 380, 381, 382, 362, 398, 384, 385, 386, 387, 388, 466];
+const FACE_OVAL = [10, 338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288, 397, 365, 379, 378, 400, 377, 152, 148, 176, 149, 150, 136, 172, 58, 132, 93, 234, 127, 162, 21, 54, 103, 67, 109];
+
+function drawFaceFx(now) {
+  const W = innerWidth;
+  const H = innerHeight;
+  fctx.setTransform(drawing.dpr, 0, 0, drawing.dpr, 0, 0);
+  fctx.clearRect(0, 0, W, H);
+  const fr = S.lastFrame;
+  const v = ui.video;
+  if (!ui.body.classList.contains('face') || !fr?.face || !fr.lm || now - fr.t > 400 || !v.videoWidth) return;
+  // Map camera landmarks onto the mirrored, cover-fitted video.
+  const sc = Math.max(W / v.videoWidth, H / v.videoHeight);
+  const dw = v.videoWidth * sc;
+  const dh = v.videoHeight * sc;
+  const ox = (W - dw) / 2;
+  const oy = (H - dh) / 2;
+  const P = (i) => ({ x: W - (ox + fr.lm[i].x * dw), y: oy + fr.lm[i].y * dh });
+  const strength = S.phase === 'ready' ? 0.55 : 1; // quieter while drawing
+  const breathe = 0.85 + 0.15 * Math.sin(now / 900);
+
+  // Sparse mesh: a faint constellation of points on the face.
+  fctx.fillStyle = `rgba(255,255,255,${0.32 * strength * breathe})`;
+  for (let i = 0; i < 468; i += 6) {
+    const p = P(i);
+    fctx.beginPath();
+    fctx.arc(p.x, p.y, 1.1, 0, Math.PI * 2);
+    fctx.fill();
+  }
+  const outline = (idx, alpha, width) => {
+    fctx.strokeStyle = `rgba(255,255,255,${alpha})`;
+    fctx.lineWidth = width;
+    fctx.beginPath();
+    idx.forEach((i, k) => {
+      const p = P(i);
+      if (k) fctx.lineTo(p.x, p.y);
+      else fctx.moveTo(p.x, p.y);
+    });
+    fctx.closePath();
+    fctx.stroke();
+  };
+  outline(FACE_OVAL, 0.16 * strength * breathe, 1);
+  const open = 1 - clamp((fr.blink - 0.25) / 0.35, 0, 1);
+  outline(EYE_R, 0.5 * strength * open, 1.2);
+  outline(EYE_L, 0.5 * strength * open, 1.2);
+
+  // Iris rings: the part that's actually being tracked.
+  if (open > 0.05) {
+    for (const [c, e] of [[468, 469], [473, 474]]) {
+      const pc = P(c);
+      const r = Math.max(4, dist(pc, P(e)));
+      fctx.save();
+      fctx.shadowColor = 'rgba(0,122,255,0.9)';
+      fctx.shadowBlur = 10;
+      fctx.strokeStyle = `rgba(90,170,255,${0.9 * strength * open})`;
+      fctx.lineWidth = 1.6;
+      fctx.beginPath();
+      fctx.arc(pc.x, pc.y, r * 1.15, 0, Math.PI * 2);
+      fctx.stroke();
+      fctx.restore();
+      fctx.fillStyle = `rgba(255,255,255,${0.9 * strength * open})`;
+      fctx.beginPath();
+      fctx.arc(pc.x, pc.y, 1.6, 0, Math.PI * 2);
+      fctx.fill();
+    }
+  }
 }
 
 function drawHandle(p, color) {
@@ -963,14 +1202,24 @@ function frame() {
   const now = performance.now();
   if (S.input === 'mouse' && S.mouse && S.phase === 'ready') onGazeSample({ ...S.mouse }, now);
   if (S.input !== 'mouse' && S.face.present && now - S.face.lastSeen > 700) {
+    // Hand over the face, turned away, stood up: park the pen instead of ending the line.
     S.face.present = false;
-    if (drawing.active) commitActive(300);
-    brush.reset(null);
+    S.blink.clean = false;
+    if (S.pen && S.mode === 'free' && drawing.active) parkPen(S.face.lastSeen - 150);
+    else brush.reset(null);
     S.dwellState.c = null;
   }
+  if (S.waiting && drawing.active && now - S.face.lastSeen > 20000) {
+    commitActive(); // gone a long time: keep what was drawn, start fresh on return
+    S.waiting = false;
+    brush.reset(null);
+  }
   drawOverlay(now);
+  drawFaceFx(now);
   updateCursor();
   renderIsland();
+  const focus = S.phase === 'ready';
+  if (focus !== ui.body.classList.contains('focus')) ui.body.classList.toggle('focus', focus);
   const hidePointer =
     S.phase === 'ready' && !S.card && (S.input === 'mouse' || now - S.lastMouseMove > 2500);
   if (hidePointer !== ui.body.classList.contains('hide-pointer')) ui.body.classList.toggle('hide-pointer', hidePointer);
@@ -1049,7 +1298,7 @@ async function begin(mouse = false) {
     ui.body.classList.add('mouse');
     showCard({
       title: 'Mouse preview',
-      body: 'The mouse stands in for your eyes. Speak commands, or press Space to draw and H for help.',
+      body: 'The mouse stands in for your eyes. Say “start” and “end”, or press Space. H shows every command.',
       autoHide: 6000,
     });
     renderIsland();
@@ -1067,7 +1316,7 @@ async function begin(mouse = false) {
     let tracker;
     if (params.has('simulate')) {
       const { SimTracker } = await import('./sim.js');
-      tracker = new SimTracker(() => S.simTarget || S.mouse);
+      tracker = new SimTracker(() => S.simTarget || S.mouse || { x: innerWidth / 2, y: innerHeight / 2 });
       S.showFace = false;
     } else {
       const { FaceTracker } = await import('./gaze.js');
@@ -1122,6 +1371,7 @@ addEventListener('keydown', (e) => {
     s: { type: 'save' },
     p: { type: 'photo' },
     d: { type: 'dwell', on: !S.dwell },
+    x: { type: 'fix' },
     y: { type: 'yes' },
     n: { type: 'no' },
     k: { type: 'color', color: nextColor() },
@@ -1151,8 +1401,8 @@ addEventListener('resize', () => {
   clearTimeout(resizeTimer);
   resizeTimer = setTimeout(() => {
     drawing.resize();
-    ui.overlay.width = Math.round(innerWidth * drawing.dpr);
-    ui.overlay.height = Math.round(innerHeight * drawing.dpr);
+    ui.overlay.width = ui.faceFx.width = Math.round(innerWidth * drawing.dpr);
+    ui.overlay.height = ui.faceFx.height = Math.round(innerHeight * drawing.dpr);
     const { w, h } = S.viewport;
     if (S.model && (Math.abs(w - innerWidth) > 40 || Math.abs(h - innerHeight) > 40)) {
       S.viewport = { w: innerWidth, h: innerHeight };
@@ -1161,8 +1411,8 @@ addEventListener('resize', () => {
   }, 120);
 });
 
-ui.overlay.width = Math.round(innerWidth * drawing.dpr);
-ui.overlay.height = Math.round(innerHeight * drawing.dpr);
+ui.overlay.width = ui.faceFx.width = Math.round(innerWidth * drawing.dpr);
+ui.overlay.height = ui.faceFx.height = Math.round(innerHeight * drawing.dpr);
 
 // ---------- Phones: nudge people to a laptop/desktop ----------
 const isPhone = (() => {
@@ -1227,6 +1477,7 @@ if (!voiceSupported) ui.body.classList.add('no-voice');
 window.visionbrush = {
   say: (text) => import('./voice.js').then(({ parse }) => parse(text).forEach((c) => run(c, { source: 'console' }))),
   state: S,
+  drawing,
 };
 
 renderIsland();

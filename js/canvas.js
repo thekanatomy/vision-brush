@@ -76,6 +76,13 @@ export class Drawing {
     else Drawing.paint(this.ctx, stroke);
   }
 
+  /** Swap the most recent stroke (used by "fix" to snap it, and by undo to un-snap it). */
+  replaceLast(stroke) {
+    if (!this.strokes.length) return;
+    this.strokes[this.strokes.length - 1] = stroke;
+    this.render();
+  }
+
   undo() {
     const s = this.strokes.pop();
     if (!s) return null;
@@ -102,7 +109,8 @@ export class Drawing {
     const pts = [];
     for (const s of this.visible()) {
       if (s.type === 'line') pts.push(s.a, s.b);
-      else if (s.type === 'circle') pts.push(s.c);
+      else if (s.type === 'circle' || s.type === 'ellipse') pts.push(s.c);
+      else if (s.type === 'poly') pts.push(...s.points);
     }
     return pts;
   }
@@ -147,6 +155,13 @@ export class Drawing {
       ctx.stroke();
     } else if (s.type === 'circle') {
       ctx.arc(s.c.x, s.c.y, s.r, 0, Math.PI * 2);
+      ctx.stroke();
+    } else if (s.type === 'ellipse') {
+      ctx.ellipse(s.c.x, s.c.y, s.rx, s.ry, s.rot, 0, Math.PI * 2);
+      ctx.stroke();
+    } else if (s.type === 'poly') {
+      s.points.forEach((p, i) => (i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y)));
+      if (s.closed) ctx.closePath();
       ctx.stroke();
     }
     ctx.restore();
