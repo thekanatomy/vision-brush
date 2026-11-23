@@ -136,6 +136,18 @@ export class GazeModel {
     return this;
   }
 
+  /**
+   * False when the eye features are far outside anything seen during calibration:
+   * a hand rubbing the eye, a squint, or a tracking glitch. Those frames are skipped.
+   */
+  plausible(f) {
+    const r = this.terms(f);
+    for (const j of [0, 1]) {
+      if (Math.abs((r[j] - this.mean[j]) / this.std[j]) > 4.5) return false;
+    }
+    return true;
+  }
+
   predict(f) {
     const r = this.terms(f);
     let x = this.wx[0];

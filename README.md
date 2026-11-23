@@ -8,7 +8,7 @@ Built for AME 434 · Machine Learning for Media & Arts · Arizona State Universi
 
 ## Try it
 
-- **Live:** <https://thekanatomy.github.io/visionbrush/>
+- **Live:** <https://thekanatomy.github.io/vision-brush/>
 - **Local:** `python3 -m http.server 8000` in this folder, then open <http://localhost:8000>
   (the camera only works on `https://` or `localhost`)
 - **No camera?** Add `?mouse` (the mouse stands in for your eyes) or `?simulate` (fake eye tracker that follows the calibration dots, then the mouse)
@@ -59,6 +59,18 @@ webcam ─▶ MediaPipe Face Landmarker (478 landmarks + iris + blendshapes + he
 voice  ─▶ Web Speech API, continuous; commands act on interim results for speed,
           and “here” uses where you were looking just *before* you spoke
 ```
+
+### Built for real eyes (blinks, itches, glances)
+
+| What eyes do | What VisionBrush does |
+|---|---|
+| **Blink** | The eyelid drags the iris down just before a blink registers, so the last ~140 ms is rewound, the pen holds during the blink, and the first ~170 ms after reopening is ignored. Hysteresis stops half-blinks from flickering. |
+| **Glance away** (check something, get distracted) | A jump far beyond normal drawing steps parks the pen where it was, with no streak. A ring shows where it's waiting; look back at it for a quarter-second and the *same* line continues. |
+| **Rub an itchy eye / hand over face / turn away** | Frames that look nothing like calibration are dropped; losing the face parks the pen instead of ending the line. |
+| **Tremor, micro-movements** | One Euro smoothing with a noise floor measured per person during calibration, plus a lazy-brush leash. |
+| **Hands-free toggle** | Eyes closed ~0.7–2.5 s *with the head still* starts/stops the pen. Normal blinks are too short; eye-rubs move the head, so they're ignored. |
+
+The thresholds scale with each person's own calibration accuracy and jitter, so a shaky tracker gets more forgiving guards.
 
 Design choices, with the research behind them:
 

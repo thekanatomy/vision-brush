@@ -1091,6 +1091,7 @@ async function begin(mouse = false) {
 addEventListener('keydown', (e) => {
   if (e.metaKey || e.ctrlKey || e.altKey) return;
   if (S.phase === 'welcome') {
+    if (ui.body.classList.contains('phone')) return;
     if (e.key === ' ' || e.key === 'Enter') {
       e.preventDefault();
       begin(false);
@@ -1163,6 +1164,46 @@ addEventListener('resize', () => {
 ui.overlay.width = Math.round(innerWidth * drawing.dpr);
 ui.overlay.height = Math.round(innerHeight * drawing.dpr);
 
+// ---------- Phones: nudge people to a laptop/desktop ----------
+const isPhone = (() => {
+  if (params.has('desktop')) return false;
+  if (params.has('phone')) return true;
+  if (navigator.userAgentData?.mobile) return true;
+  if (/iPhone|iPod|Android.+Mobile|Windows Phone|Mobi/i.test(navigator.userAgent)) return true;
+  const touchOnly = matchMedia('(pointer: coarse)').matches && !matchMedia('(any-pointer: fine)').matches;
+  return touchOnly && Math.min(screen.width, screen.height) < 600;
+})();
+
+if (isPhone) {
+  ui.body.classList.add('phone');
+  const link = `${location.origin}${location.pathname}`;
+  $('#phone-url').textContent = link.replace(/^https?:\/\//, '');
+  const share = $('#phone-share');
+  if (!navigator.share) share.textContent = 'Email it to myself';
+  share.addEventListener('click', async () => {
+    if (navigator.share) {
+      try {
+        await navigator.share({ title: 'VisionBrush', text: 'Open this on your computer — draw with your eyes:', url: link });
+      } catch {
+        /* closed the share sheet */
+      }
+    } else {
+      location.href = `mailto:?subject=${encodeURIComponent('VisionBrush — open on my computer')}&body=${encodeURIComponent(link)}`;
+    }
+  });
+  $('#phone-copy').addEventListener('click', async (e) => {
+    const btn = e.currentTarget;
+    try {
+      await navigator.clipboard.writeText(link);
+      btn.textContent = 'Copied';
+    } catch {
+      btn.textContent = 'Press and hold the link to copy';
+    }
+    setTimeout(() => (btn.textContent = 'Copy link'), 2200);
+  });
+  $('#phone-anyway').addEventListener('click', () => ui.body.classList.remove('phone'));
+}
+
 ui.welcome.addEventListener('click', () => begin(false));
 ui.tryMouse.addEventListener('click', (e) => {
   e.stopPropagation();
@@ -1172,7 +1213,7 @@ if (!voiceSupported) ui.body.classList.add('no-voice');
 
 // Returning visitors who already allowed the camera start hands-free.
 (async () => {
-  if (params.has('mouse')) return;
+  if (params.has('mouse') || isPhone) return;
   try {
     const cam = await navigator.permissions.query({ name: 'camera' });
     const mic = voiceSupported ? await navigator.permissions.query({ name: 'microphone' }) : { state: 'granted' };
