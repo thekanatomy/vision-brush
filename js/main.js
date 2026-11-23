@@ -86,6 +86,7 @@ const S = {
   micState: 'off',
   pulses: [],
   mouse: null,
+  lastMouseMove: 0,
   tracker: null,
   viewport: { w: innerWidth, h: innerHeight },
 };
@@ -970,6 +971,9 @@ function frame() {
   drawOverlay(now);
   updateCursor();
   renderIsland();
+  const hidePointer =
+    S.phase === 'ready' && !S.card && (S.input === 'mouse' || now - S.lastMouseMove > 2500);
+  if (hidePointer !== ui.body.classList.contains('hide-pointer')) ui.body.classList.toggle('hide-pointer', hidePointer);
   requestAnimationFrame(frame);
 }
 
@@ -1138,6 +1142,7 @@ function nextColor() {
 
 addEventListener('mousemove', (e) => {
   S.mouse = { x: e.clientX, y: e.clientY };
+  S.lastMouseMove = performance.now();
 });
 
 let resizeTimer = 0;
