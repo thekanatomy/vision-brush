@@ -19,7 +19,7 @@ Best in **Chrome or Edge** on a laptop or desktop, webcam at eye level, light on
 
 1. Click once (or press Space) to start. Allow the camera and microphone.
 2. **Calibrate:** look at each dot until it moves on (~35 s). VisionBrush reports its accuracy.
-3. **Draw:** say a command. Your gaze decides *where*, your voice decides *what*. Once calibrated, your face fades back so the drawing takes focus; a faint mesh and glowing iris rings show what's being tracked.
+3. **Draw:** say a command. Your gaze decides *where*, your voice decides *what*. During calibration and drawing your face stays faded so the room behind you doesn't distract; a faint mesh and glowing iris rings show what's being tracked.
 
 | Say | What happens |
 |---|---|
@@ -65,9 +65,9 @@ voice  ─▶ Web Speech API, continuous; commands act on interim results for sp
 
 | What eyes do | What VisionBrush does |
 |---|---|
-| **Blink** | The eyelid drags the iris down just before a blink registers, so the last ~140 ms is rewound, the pen holds during the blink, and the first ~170 ms after reopening is ignored. Hysteresis stops half-blinks from flickering. |
-| **Glance away** (check something, get distracted) | A jump far beyond normal drawing steps parks the pen where it was, with no streak. A ring shows where it's waiting; look back at it for a quarter-second and the *same* line continues. |
-| **Rub an itchy eye / hand over face / turn away** | Frames that look nothing like calibration are dropped; losing the face parks the pen instead of ending the line. |
+| **Blink** | The eyelid drags the iris down just before a blink registers, so the last ~100 ms is rewound, the pen holds during the blink, and the first ~100 ms after reopening is ignored. |
+| **Rub an itchy eye / squint** | Frames that look nothing like calibration are dropped. |
+| **Hand over face / turn away** | The current line ends cleanly instead of streaking. |
 | **Tremor, micro-movements** | One Euro smoothing with a noise floor measured per person during calibration, plus a lazy-brush leash. |
 | **Hands-free toggle** | Eyes closed ~0.7–2.5 s *with the head still* starts/stops the pen. Normal blinks are too short; eye-rubs move the head, so they're ignored. |
 

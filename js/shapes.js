@@ -50,23 +50,6 @@ function polyError(pts, verts) {
   return e / pts.length;
 }
 
-/** Ramer–Douglas–Peucker simplification of an open path. */
-function rdp(pts, eps) {
-  if (pts.length < 3) return pts;
-  let idx = 0;
-  let dmax = 0;
-  for (let i = 1; i < pts.length - 1; i++) {
-    const d = segDist(pts[i], pts[0], pts[pts.length - 1]);
-    if (d > dmax) {
-      dmax = d;
-      idx = i;
-    }
-  }
-  if (dmax <= eps) return [pts[0], pts[pts.length - 1]];
-  const left = rdp(pts.slice(0, idx + 1), eps);
-  return [...left.slice(0, -1), ...rdp(pts.slice(idx), eps)];
-}
-
 function centroid(pts) {
   let x = 0;
   let y = 0;
@@ -123,39 +106,41 @@ function fitEllipse(pts, diag) {
   return { err, shape: { type: 'ellipse', c, rx, ry, rot }, label: 'Oval' };
 }
 
-/** Corners of a closed outline: RDP from the point farthest from the centre, then drop near-straight joints. */
-function corners(ring, diag) {
-  const c = centroid(ring);
-  let start = 0;
-  let far = 0;
-  ring.forEach((p, i) => {
-    const d = dist(p, c);
-    if (d > far) {
-      far = d;
-      start = i;
-    }
-  });
-  const loop = [...ring.slice(start), ...ring.slice(0, start), ring[start]];
-  let v = rdp(loop, 0.07 * diag).slice(0, -1);
-  let changed = true;
-  while (changed && v.length > 2) {
-    changed = false;
-    for (let i = 0; i < v.length; i++) {
-      const a = v[(i - 1 + v.length) % v.length];
-      const b = v[i];
-      const d = v[(i + 1) % v.length];
-      const t1 = Math.atan2(b.y - a.y, b.x - a.x);
-      const t2 = Math.atan2(d.y - b.y, d.x - b.x);
-      let turn = Math.abs(t2 - t1);
-      if (turn > Math.PI) turn = 2 * Math.PI - turn;
-      if (turn < 0.45 || dist(a, b) < 0.12 * diag) {
-        v.splice(i, 1);
-        changed = true;
-        break;
+function hull(points) {
+  const pts = [...points].sort((p, q) => p.x - q.x || p.y - q.y);
+  const cross = (o, a, b) => (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
+  const lower = [];
+  for (const p of pts) {
+    while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], p) <= 0) lower.pop();
+    lower.push(p);
+  }
+  const upper = [];
+  for (const p of pts.reverse()) {
+    while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], p) <= 0) upper.pop();
+    upper.push(p);
+  }
+  return [...lower.slice(0, -1), ...upper.slice(0, -1)];
+}
+
+/** Best triangle: the largest triangle that fits on the outline's convex hull (robust to rounded corners). */
+function fitTriangle(ring, diag) {
+  let h = hull(ring);
+  if (h.length > 36) h = h.filter((_, i) => i % Math.ceil(h.length / 36) === 0);
+  let best = null;
+  let bestArea = 0;
+  for (let i = 0; i < h.length; i++) {
+    for (let j = i + 1; j < h.length; j++) {
+      for (let k = j + 1; k < h.length; k++) {
+        const area = Math.abs((h[j].x - h[i].x) * (h[k].y - h[i].y) - (h[k].x - h[i].x) * (h[j].y - h[i].y));
+        if (area > bestArea) {
+          bestArea = area;
+          best = [h[i], h[j], h[k]];
+        }
       }
     }
   }
-  return v;
+  if (!best) return null;
+  return { err: polyError(ring, best) / diag, shape: { type: 'poly', points: best.map((p) => ({ x: p.x, y: p.y })), closed: true }, label: 'Triangle' };
 }
 
 /**
@@ -219,12 +204,7 @@ export function recognize(points) {
   if (chord > Math.max(45, 0.5 * diag)) return null;
   const ring = resample([...points, points[0]], 72).slice(0, -1);
 
-  const candidates = [fitEllipse(ring, diag), fitRect(ring, diag)];
-  const v = corners(ring, diag);
-  if (v.length === 3) {
-    // Three clear corners: a triangle (slightly preferred, since circles never produce three sharp corners).
-    candidates.push({ err: (polyError(ring, v) / diag) * 0.85, shape: { type: 'poly', points: v, closed: true }, label: 'Triangle' });
-  }
+  const candidates = [fitEllipse(ring, diag), fitRect(ring, diag), fitTriangle(ring, diag)].filter(Boolean);
   candidates.sort((x, y) => x.err - y.err);
   const best = candidates[0];
   return best.err < 0.055 ? best : null;

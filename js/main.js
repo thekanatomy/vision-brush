@@ -43,11 +43,10 @@ const SNAP_PX = 38;
 const DWELL_R = 50;
 const DWELL_MS = 1100;
 // Involuntary-eye guards
-const BLINK_ON = 0.45; // eyelids closing (hysteresis: on above this…)
-const BLINK_OFF = 0.3; // …off below this
-const BLINK_REWIND_MS = 140; // the eyelid starts dragging the iris down before a blink registers
-const BLINK_SETTLE_MS = 170; // eyes wobble for a moment after they reopen
-const REGRAB_MS = 250; // look back at the pen this long to pick it up again
+const BLINK_ON = 0.6; // eyelids closed (hysteresis: on above this…)
+const BLINK_OFF = 0.4; // …off below this
+const BLINK_REWIND_MS = 100; // the eyelid starts dragging the iris down before a blink registers
+const BLINK_SETTLE_MS = 100; // eyes wobble for a moment after they reopen
 
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
@@ -228,7 +227,7 @@ function renderIsland() {
   else if (camera && !S.face.present) {
     state = 'Can’t see your face';
     alert = true;
-  } else if (S.mode === 'free') state = S.waiting ? 'Look back at the pen · or say “end”' : S.pen ? 'Drawing · say “end” to lift' : 'Say “start” to draw';
+  } else if (S.mode === 'free') state = S.pen ? 'Drawing · say “end” to lift' : 'Say “start” to draw';
   else if (S.anchor) state = S.mode === 'circle' ? 'Look at the edge · “here”' : 'Next point · “here” or “done”';
   else state = 'Look, then say “here”';
 
@@ -343,35 +342,6 @@ function gazeBefore(t, from = 900, to = 150) {
   return { x: median(near.map((p) => p.x)), y: median(near.map((p) => p.y)) };
 }
 
-// A glance is a jump well beyond normal drawing steps + this person's jitter.
-const glanceDist = () => clamp(S.noise * 3 + 150, 300, 520);
-// Looking "at the pen" lands within this person's accuracy of it.
-const regrabDist = () => clamp(Math.max(S.noise, S.accuracy ?? 100) * 1.1, 80, 200);
-
-/** A glance: the last few raw gaze samples all landed far from the pen. Returns the glance start time. */
-function glanceStart(t) {
-  if (S.input === 'mouse' || !brush.pos) return 0;
-  const recent = S.rawHist.filter((h) => h.t > t - 160);
-  if (recent.length < 3) return 0;
-  const far = recent.slice(-3);
-  // Compare against where the pen was when the jump began (it may have started chasing since).
-  const pts = drawing.active?.points || [];
-  let origin = pts[0] || brush.pos;
-  for (const p of pts) {
-    if (p.t >= far[0].t) break;
-    origin = p;
-  }
-  if (!far.every((h) => dist(h, origin) > glanceDist())) return 0;
-  return far[0].t;
-}
-
-function parkPen(since) {
-  S.waiting = true;
-  S.regrabSince = 0;
-  if (since) rewind(since - 34);
-  blip(520, 50, 0.03);
-}
-
 function snap(p) {
   const pts = drawing.snapPoints();
   if (S.chainStart) pts.push(S.chainStart);
@@ -389,23 +359,6 @@ function snap(p) {
 
 // ---------- Drawing ----------
 function freeDraw(g, t) {
-  if (S.waiting) {
-    // The pen waits where it was. Look back at it to keep drawing the same line.
-    if (brush.pos && dist(g, brush.pos) < regrabDist()) {
-      S.regrabSince ||= t;
-      if (t - S.regrabSince >= REGRAB_MS) {
-        S.waiting = false;
-        S.regrabSince = 0;
-        blip(988, 50, 0.03);
-      }
-    } else S.regrabSince = 0;
-    return;
-  }
-  const since = drawing.active ? glanceStart(t) : 0;
-  if (since) {
-    parkPen(since);
-    return;
-  }
   brush.update(g);
   const a = drawing.active;
   if (!a) {
@@ -1016,27 +969,7 @@ function drawOverlay(now) {
   if (S.phase === 'ready' && g && (S.input === 'mouse' || S.face.present)) {
     const color = S.color === 'eraser' ? '#ffffff' : COLORS[S.color];
     const width = SIZES[S.sizeIdx];
-    if (S.mode === 'free' && S.pen && brush.pos && S.waiting) {
-      // Parked pen: a breathing ring that fills as you look back at it.
-      const k = 0.5 + 0.5 * Math.sin(now / 260);
-      const grab = S.regrabSince ? clamp((now - S.regrabSince) / REGRAB_MS, 0, 1) : 0;
-      octx.strokeStyle = `rgba(0,122,255,${0.35 + 0.35 * k})`;
-      octx.lineWidth = 3;
-      octx.beginPath();
-      octx.arc(brush.pos.x, brush.pos.y, regrabDist() * (0.85 + 0.15 * k), 0, Math.PI * 2);
-      octx.stroke();
-      if (grab) {
-        octx.strokeStyle = '#007aff';
-        octx.lineWidth = 4;
-        octx.beginPath();
-        octx.arc(brush.pos.x, brush.pos.y, regrabDist(), -Math.PI / 2, -Math.PI / 2 + grab * Math.PI * 2);
-        octx.stroke();
-      }
-      octx.fillStyle = color;
-      octx.beginPath();
-      octx.arc(brush.pos.x, brush.pos.y, Math.max(4, width / 2), 0, Math.PI * 2);
-      octx.fill();
-    } else if (S.mode === 'free' && S.pen && brush.pos) {
+    if (S.mode === 'free' && S.pen && brush.pos) {
       octx.strokeStyle = 'rgba(0,0,0,0.25)';
       octx.lineWidth = 1;
       octx.beginPath();
@@ -1202,23 +1135,17 @@ function frame() {
   const now = performance.now();
   if (S.input === 'mouse' && S.mouse && S.phase === 'ready') onGazeSample({ ...S.mouse }, now);
   if (S.input !== 'mouse' && S.face.present && now - S.face.lastSeen > 700) {
-    // Hand over the face, turned away, stood up: park the pen instead of ending the line.
     S.face.present = false;
     S.blink.clean = false;
-    if (S.pen && S.mode === 'free' && drawing.active) parkPen(S.face.lastSeen - 150);
-    else brush.reset(null);
-    S.dwellState.c = null;
-  }
-  if (S.waiting && drawing.active && now - S.face.lastSeen > 20000) {
-    commitActive(); // gone a long time: keep what was drawn, start fresh on return
-    S.waiting = false;
+    if (drawing.active) commitActive(300);
     brush.reset(null);
+    S.dwellState.c = null;
   }
   drawOverlay(now);
   drawFaceFx(now);
   updateCursor();
   renderIsland();
-  const focus = S.phase === 'ready';
+  const focus = S.phase === 'ready' || S.phase === 'calibrating'; // face steps back while tracking and drawing
   if (focus !== ui.body.classList.contains('focus')) ui.body.classList.toggle('focus', focus);
   const hidePointer =
     S.phase === 'ready' && !S.card && (S.input === 'mouse' || now - S.lastMouseMove > 2500);
